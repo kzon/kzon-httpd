@@ -1,5 +1,5 @@
 [package]
-name = "http-server"
+name = "kzon-httpd"
 version = "0.1.0"
 authors = ["Anton Kobzev <kzon@ozon.ru>"]
 edition = "2018"
@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 chrono = "0.4.10"
+urldecode = "0.1.1"
