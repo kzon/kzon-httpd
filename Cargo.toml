@@ -9,3 +9,4 @@ edition = "2018"
 [dependencies]
 chrono = "0.4.10"
 urldecode = "0.1.1"
+mio = "0.6.21"

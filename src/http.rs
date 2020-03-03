@@ -1,36 +1,30 @@
+extern crate chrono;
+
 use std::fs;
 use std::io::prelude::*;
-use std::net::TcpStream;
 use std::path;
 
-extern crate chrono;
 use chrono::Utc;
 
 const SERVER_HEADER: &str = "kzon-httpd";
-const CONNECTION_HEADER: &str = "close";
+const CONNECTION_HEADER: &str = "keep-alive";
 
 const DEFAULT_CONTENT_TYPE: &str = "text/plain";
 
-pub fn write_status(stream: TcpStream, status: i32) {
-    write(stream, status, &[], 0, DEFAULT_CONTENT_TYPE);
+pub fn write_status(status: i32) -> Vec<u8> {
+    return write(status, &[], 0, DEFAULT_CONTENT_TYPE);
 }
 
-pub fn write_head(stream: TcpStream, status: i32, content_len: usize, content_type: &str) {
-    write(stream, status, &[], content_len, content_type);
+pub fn write_head(status: i32, content_len: usize, content_type: &str) -> Vec<u8> {
+    return write(status, &[], content_len, content_type);
 }
 
-pub fn write_content(stream: TcpStream, status: i32, content: &[u8], content_type: &str) {
-    write(stream, status, content, content.len(), content_type);
+pub fn write_content(status: i32, content: &[u8], content_type: &str) -> Vec<u8> {
+    return write(status, content, content.len(), content_type);
 }
 
-pub fn write(
-    mut stream: TcpStream,
-    status: i32,
-    body: &[u8],
-    content_len: usize,
-    content_type: &str,
-) {
-    println!("< {}", status);
+pub fn write(status: i32, body: &[u8], content_len: usize, content_type: &str) -> Vec<u8> {
+    // println!("< {}", status);
     let headers = [
         format!("HTTP/1.1 {} {}", status, get_status_name(status)),
         format!("Server: {}", SERVER_HEADER),
@@ -42,17 +36,15 @@ pub fn write(
     ];
     let mut response = headers.join("\r\n").to_string().into_bytes();
     response.extend(body);
-    stream.write(&response[..]).unwrap();
-    stream.flush().unwrap();
+    return response;
 }
 
-pub fn send_file(stream: TcpStream, filepath: String, method: &str) {
+pub fn send_file(filepath: String, method: &str) -> Vec<u8> {
     let mut file: std::fs::File;
     match fs::File::open(&filepath) {
         Ok(f) => file = f,
         Err(_err) => {
-            write_status(stream, 404);
-            return;
+            return write_status(404);
         }
     }
 
@@ -65,9 +57,9 @@ pub fn send_file(stream: TcpStream, filepath: String, method: &str) {
     let mut buf: Vec<u8> = Vec::new();
     file.read_to_end(&mut buf).unwrap();
     if method == "HEAD" {
-        write_head(stream, 200, buf.len(), content_type);
+        return write_head(200, buf.len(), content_type);
     } else {
-        write_content(stream, 200, &buf[..], content_type);
+        return write_content(200, &buf[..], content_type);
     }
 }
 
