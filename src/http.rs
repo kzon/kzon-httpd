@@ -24,7 +24,7 @@ pub fn write_content(status: i32, content: &[u8], content_type: &str) -> Vec<u8>
 }
 
 pub fn write(status: i32, body: &[u8], content_len: usize, content_type: &str) -> Vec<u8> {
-    // println!("< {}", status);
+    println!("< {}", status);
     let headers = [
         format!("HTTP/1.1 {} {}", status, get_status_name(status)),
         format!("Server: {}", SERVER_HEADER),

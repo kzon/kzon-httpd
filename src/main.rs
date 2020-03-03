@@ -1,5 +1,6 @@
 // ab -n 10000 -c 128 -k http://127.0.0.1:7878/httptest/dir1/dir12/dir123/deep.txt
 // wrk -d 5s -t 4 -c 128 http://127.0.0.1:7878/httptest/dir1/dir12/dir123/deep.txt
+// wrk -d 10s -t 4 -c 128 http://127.0.0.1:7878/httptest/wikipedia_russia.html
 
 mod config;
 mod http;
@@ -48,6 +49,8 @@ fn main() -> Result<(), io::Error> {
 
                             sockets.insert(token, socket);
                             requests.insert(token, Vec::with_capacity(192));
+
+                            println!("connected {}", token.0);
                         }
                         Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                         Err(_) => break,
@@ -81,6 +84,7 @@ fn main() -> Result<(), io::Error> {
 
                     if ready {
                         if let Some(socket) = sockets.get(&token) {
+                            println!("got request from {}", token.0);
                             let request = requests.get_mut(&token).unwrap();
                             let response = handle_request(request, &config);
                             responses.insert(token, response);
@@ -96,6 +100,7 @@ fn main() -> Result<(), io::Error> {
                     }
                 }
                 token if event.readiness().is_writable() => {
+                    println!("writable {}", token.0);
                     let socket = sockets.get_mut(&token).unwrap();
                     let pending_write_buffer = responses.get_mut(&token).unwrap();
                     while !pending_write_buffer.is_empty() {
@@ -107,13 +112,28 @@ fn main() -> Result<(), io::Error> {
                                     pending_write_buffer[n] = pending_write_buffer[n + written];
                                 }
                                 pending_write_buffer.resize(cut_len, 0);
+                                println!("wrote {} to {}", written, token.0);
                             }
                             Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {},
-                            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                            Err(_) => break,
+                            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                                println!("would block");
+                                poll.reregister(
+                                    socket,
+                                    token,
+                                    Ready::writable(),
+                                    PollOpt::edge() | PollOpt::oneshot(),
+                                )
+                                .unwrap();
+                                break
+                            }
+                            Err(ref e) => {
+                                println!("{}", e);
+                                break
+                            }
                         }
                     }
                     if pending_write_buffer.is_empty() {
+                        println!("finish write to {}", token.0);
                         responses.remove(&token);
                         poll.reregister(
                             socket,
@@ -140,8 +160,8 @@ fn is_double_crnl(window: &[u8]) -> bool {
 
 fn handle_request(req_bytes: &Vec<u8>, config: &config::Config) -> Vec<u8> {
     let request = String::from_utf8_lossy(req_bytes);
-    // println!("> {}", request);
-    // println!();
+    println!("> {}", request);
+    println!();
 
     let parts: Vec<&str> = request.splitn(3, " ").collect();
     let method = parts[0];
