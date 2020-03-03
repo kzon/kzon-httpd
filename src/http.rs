@@ -11,6 +11,11 @@ const CONNECTION_HEADER: &str = "keep-alive";
 
 const DEFAULT_CONTENT_TYPE: &str = "text/plain";
 
+pub enum Proto {
+    HTTP10,
+    HTTP11,
+}
+
 pub fn write_status(status: i32) -> Vec<u8> {
     return write(status, &[], 0, DEFAULT_CONTENT_TYPE);
 }
@@ -82,5 +87,13 @@ fn get_status_name(status: i32) -> &'static str {
         403 => "Forbidden",
         404 => "Not found",
         _ => "",
+    }
+}
+
+pub fn get_proto(proto: &str) -> Proto {
+    match proto {
+        "HTTP/1.0" => Proto::HTTP10,
+        "HTTP/1.1" => Proto::HTTP11,
+        _ => Proto::HTTP11,
     }
 }

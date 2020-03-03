@@ -1,6 +1,6 @@
 // ab -n 10000 -c 128 -k http://127.0.0.1:7878/httptest/dir1/dir12/dir123/deep.txt
 // wrk -d 5s -t 4 -c 128 http://127.0.0.1:7878/httptest/dir1/dir12/dir123/deep.txt
-// wrk -d 10s -t 4 -c 128 http://127.0.0.1:7878/httptest/wikipedia_russia.html
+// wrk -d 5s -t 4 -c 128 http://127.0.0.1:7878/httptest/wikipedia_russia.html
 
 mod config;
 mod http;
@@ -14,15 +14,39 @@ use std::collections::HashMap;
 use std::io;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::thread;
 
 fn main() -> Result<(), io::Error> {
     let config = config::get()?;
 
+    println!("workers num: {}", config.workers_num);
     println!("document root: {}", config.document_root);
 
     let address = "0.0.0.0:7878";
     let listener = TcpListener::bind(&address.parse().unwrap()).unwrap();
 
+    for n in 0..config.workers_num - 1 {
+        let listener = listener.try_clone().unwrap();
+        let config = config::Config{
+            workers_num: config.workers_num,
+            document_root: config.document_root.clone(),
+        };
+        thread::spawn(move || {
+            serve(n + 1, listener, &config);
+        });
+    }
+
+    serve(config.workers_num, listener, &config);
+
+    Ok(())
+}
+
+struct Response {
+    data: Vec<u8>,
+    proto: http::Proto,
+}
+
+fn serve(n: usize, listener: TcpListener, config: &config::Config) {
     let poll = Poll::new().unwrap();
     poll.register(&listener, Token(0), Ready::readable(), PollOpt::edge())
         .unwrap();
@@ -30,7 +54,7 @@ fn main() -> Result<(), io::Error> {
     let mut counter: usize = 0;
     let mut sockets: HashMap<Token, TcpStream> = HashMap::new();
     let mut requests: HashMap<Token, Vec<u8>> = HashMap::new();
-    let mut responses: HashMap<Token, Vec<u8>> = HashMap::new();
+    let mut responses: HashMap<Token, Response> = HashMap::new();
     let mut buffer = [0 as u8; 1024];
 
     let mut events = Events::with_capacity(1024);
@@ -49,8 +73,6 @@ fn main() -> Result<(), io::Error> {
 
                             sockets.insert(token, socket);
                             requests.insert(token, Vec::with_capacity(192));
-
-                            println!("connected {}", token.0);
                         }
                         Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                         Err(_) => break,
@@ -84,9 +106,9 @@ fn main() -> Result<(), io::Error> {
 
                     if ready {
                         if let Some(socket) = sockets.get(&token) {
-                            println!("got request from {}", token.0);
+                            io::stdout().flush().unwrap();
                             let request = requests.get_mut(&token).unwrap();
-                            let response = handle_request(request, &config);
+                            let response = handle_request(n, request, &config);
                             responses.insert(token, response);
                             request.clear();
                             poll.reregister(
@@ -100,9 +122,9 @@ fn main() -> Result<(), io::Error> {
                     }
                 }
                 token if event.readiness().is_writable() => {
-                    println!("writable {}", token.0);
                     let socket = sockets.get_mut(&token).unwrap();
-                    let pending_write_buffer = responses.get_mut(&token).unwrap();
+                    let response = responses.get_mut(&token).unwrap();
+                    let pending_write_buffer = &mut response.data;
                     while !pending_write_buffer.is_empty() {
                         match socket.write(pending_write_buffer) {
                             Ok(0) => break,
@@ -112,11 +134,9 @@ fn main() -> Result<(), io::Error> {
                                     pending_write_buffer[n] = pending_write_buffer[n + written];
                                 }
                                 pending_write_buffer.resize(cut_len, 0);
-                                println!("wrote {} to {}", written, token.0);
                             }
                             Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {},
                             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                                println!("would block");
                                 poll.reregister(
                                     socket,
                                     token,
@@ -126,22 +146,23 @@ fn main() -> Result<(), io::Error> {
                                 .unwrap();
                                 break
                             }
-                            Err(ref e) => {
-                                println!("{}", e);
+                            Err(_) => {
                                 break
                             }
                         }
                     }
                     if pending_write_buffer.is_empty() {
-                        println!("finish write to {}", token.0);
+                        match response.proto {
+                            http::Proto::HTTP10 => socket.shutdown(std::net::Shutdown::Both).unwrap(),
+                            http::Proto::HTTP11 => poll.reregister(
+                                socket,
+                                token,
+                                Ready::readable(),
+                                PollOpt::edge() | PollOpt::oneshot(),
+                            )
+                            .unwrap(),
+                        }
                         responses.remove(&token);
-                        poll.reregister(
-                            socket,
-                            token,
-                            Ready::readable(),
-                            PollOpt::edge() | PollOpt::oneshot(),
-                        )
-                        .unwrap();
                     }
                 }
                 _ => unreachable!(),
@@ -158,18 +179,25 @@ fn is_double_crnl(window: &[u8]) -> bool {
         && (window[3] == '\n' as u8)
 }
 
-fn handle_request(req_bytes: &Vec<u8>, config: &config::Config) -> Vec<u8> {
+fn handle_request(n: usize, req_bytes: &Vec<u8>, config: &config::Config) -> Response {
     let request = String::from_utf8_lossy(req_bytes);
-    println!("> {}", request);
-    println!();
+    println!("#{} > {}\n", n, request);
 
-    let parts: Vec<&str> = request.splitn(3, " ").collect();
+    let parts: Vec<&str> = request.splitn(4, " ").collect();
     let method = parts[0];
-    if method != "GET" && method != "HEAD" {
-        return http::write_status(405);
+    let path = parts[1];
+    let mut proto = parts[2].to_string();
+    proto.truncate(proto.len() - 4);  // remove newlines
+
+    let data = if method != "GET" && method != "HEAD" {
+        http::write_status(405)
     } else {
-        let path = parts[1];
-        return send_file(&config.document_root, path.to_string(), method);
+        send_file(&config.document_root, path.to_string(), method)
+    };
+
+    Response{
+        data,
+        proto: http::get_proto(proto.as_str()),
     }
 }
 
